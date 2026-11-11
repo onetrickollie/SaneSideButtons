@@ -1,0 +1,9 @@
+    507ms REPORT id=1 button bits [. . . . .]  raw=01 00 f8 ff fc ff 00
+   2049ms REPORT id=1 button bits [. . 3 . .]  raw=01 04 00 00 00 00 00
+   2049ms VALUE button-usage=3 cookie=18 value=1
+   2923ms REPORT id=1 button bits [. . . . .]  raw=01 00 00 00 00 00 00
+   2923ms VALUE button-usage=3 cookie=18 value=0
+   4827ms REPORT id=1 button bits [. . . 4 .]  raw=01 08 00 00 00 00 00
+   5011ms REPORT id=1 button bits [. . . . .]  raw=01 00 00 00 00 00 00
+   7091ms REPORT id=1 button bits [. . . . 5]  raw=01 10 00 00 00 00 00
+   7267ms REPORT id=1 button bits [. . . . .]  raw=01 00 04 00 fa ff 00

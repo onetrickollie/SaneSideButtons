@@ -1,0 +1,8 @@
+label,app,input,rating,notes
+safari-trackpad,"Safari",trackpad,2,"its not really smooth, i can feel the chunks when i scroll, its not a continous scroll like the native mac mouse"
+safari-sidebutton,"Safari",sidebutton,3,"this might just be a setup or mouse issue, this never  really worked before"
+google-chrome-trackpad,"Google Chrome",trackpad,1,"Chrome is a lot smoother than safari"
+google-chrome-sidebutton,"Google Chrome",sidebutton,3,"same as safari, might be mouse of setup issues"
+finder-trackpad,"Finder",trackpad,2,""
+finder-sidebutton,"Finder",sidebutton,3,""
+muse-trackpad,"Muse",trackpad,2,""

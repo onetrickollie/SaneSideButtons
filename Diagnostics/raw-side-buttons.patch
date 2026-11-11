@@ -1,0 +1,503 @@
+From 8c239794fde1002d4200b7f3fb64ef66632667e8 Mon Sep 17 00:00:00 2001
+From: KaiLiu12 <74182067+onetrickollie@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 14:48:10 -0800
+Subject: [PATCH] Support side buttons that arrive as a middle click
+
+Some mice declare more button bits in their HID report descriptor than
+they give button usages to. A Delux mouse's "Wireless Receiver"
+(VID 0x248A, PID 0x8566) declares 5 button bits but only usages
+Button 1-3, so macOS gives bits 4 and 5 the middle-button usage. Both
+side buttons then reach the event tap as otherMouseDown with button
+number 2, the same as a wheel click, and are never turned into swipes.
+
+RawButtonMonitor parses each mouse's report descriptor and only opens
+devices with unnamed button bits. It reads their raw input reports and
+records presses of those bits. When a button-2 press arrives, the event
+tap waits up to 20 ms for a matching raw press; if one arrives, it posts
+the back/forward swipe and swallows the middle click and its release.
+Real wheel clicks pass through unchanged, and mice with complete
+descriptors are not affected.
+
+Reading raw reports needs Input Monitoring and the device.usb and
+device.bluetooth sandbox entitlements.
+
+Known limitation: the presses are recognized and the middle clicks are
+swallowed, but in testing on macOS 27.2.1 the posted swipe did not
+navigate in Safari or Chrome. That still needs investigating.
+---
+ SaneSideButtons.xcodeproj/project.pbxproj    |   4 +
+ SaneSideButtons/AppDelegate.swift            |   1 +
+ SaneSideButtons/RawButtonMonitor.swift       | 331 +++++++++++++++++++
+ SaneSideButtons/SaneSideButtons.entitlements |   4 +
+ SaneSideButtons/SwipeSimulator.swift         |  37 ++-
+ 5 files changed, 376 insertions(+), 1 deletion(-)
+ create mode 100644 SaneSideButtons/RawButtonMonitor.swift
+
+diff --git a/SaneSideButtons.xcodeproj/project.pbxproj b/SaneSideButtons.xcodeproj/project.pbxproj
+index c38efc1..8ec3dc2 100644
+--- a/SaneSideButtons.xcodeproj/project.pbxproj
++++ b/SaneSideButtons.xcodeproj/project.pbxproj
+@@ -15,6 +15,7 @@
+ 		3D06880B28FC3D0900EFFFBA /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D06880A28FC3D0800EFFFBA /* main.swift */; };
+ 		3D20D345298EB4AE00D74D28 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 3D20D347298EB4AE00D74D28 /* Localizable.strings */; };
+ 		3D25277A28FCA303003BBABD /* PermissionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D25277928FCA303003BBABD /* PermissionView.swift */; };
++		5A5A5A5A2F00000000000001 /* RawButtonMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A5A5A5A2F00000000000002 /* RawButtonMonitor.swift */; };
+ /* End PBXBuildFile section */
+ 
+ /* Begin PBXFileReference section */
+@@ -33,6 +34,7 @@
+ 		3D20D346298EB4AE00D74D28 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
+ 		3D25277928FCA303003BBABD /* PermissionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionView.swift; sourceTree = "<group>"; };
+ 		3D95DB932D40FFCE00A8AC70 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
++		5A5A5A5A2F00000000000002 /* RawButtonMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RawButtonMonitor.swift; sourceTree = "<group>"; };
+ /* End PBXFileReference section */
+ 
+ /* Begin PBXFrameworksBuildPhase section */
+@@ -70,6 +72,7 @@
+ 				3D0687F028FC3A6D00EFFFBA /* AppDelegate.swift */,
+ 				3D25277928FCA303003BBABD /* PermissionView.swift */,
+ 				3D06880628FC3B4C00EFFFBA /* SwipeSimulator.swift */,
++				5A5A5A5A2F00000000000002 /* RawButtonMonitor.swift */,
+ 				3D06880828FC3B8200EFFFBA /* Licenses.txt */,
+ 				3D0687F428FC3A6E00EFFFBA /* Assets.xcassets */,
+ 				3D0687F928FC3A6E00EFFFBA /* SaneSideButtons.entitlements */,
+@@ -172,6 +175,7 @@
+ 				3D0687F128FC3A6D00EFFFBA /* AppDelegate.swift in Sources */,
+ 				3D06880428FC3B0D00EFFFBA /* TouchEvents.c in Sources */,
+ 				3D06880728FC3B4C00EFFFBA /* SwipeSimulator.swift in Sources */,
++				5A5A5A5A2F00000000000001 /* RawButtonMonitor.swift in Sources */,
+ 			);
+ 			runOnlyForDeploymentPostprocessing = 0;
+ 		};
+diff --git a/SaneSideButtons/AppDelegate.swift b/SaneSideButtons/AppDelegate.swift
+index 3d4e665..28033c1 100644
+--- a/SaneSideButtons/AppDelegate.swift
++++ b/SaneSideButtons/AppDelegate.swift
+@@ -181,6 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
+         self.getEventPermission()
+         do {
+             try SwipeSimulator.shared.setupEventTap()
++            RawButtonMonitor.shared.start()
+         } catch {
+             if self.permissionWindow == nil {
+                 self.promptPermissions()
+diff --git a/SaneSideButtons/RawButtonMonitor.swift b/SaneSideButtons/RawButtonMonitor.swift
+new file mode 100644
+index 0000000..e98c18d
+--- /dev/null
++++ b/SaneSideButtons/RawButtonMonitor.swift
+@@ -0,0 +1,331 @@
++//
++//  RawButtonMonitor.swift
++//  SaneSideButtons
++//
++//  Some mice declare more button bits in their HID report descriptor than
++//  they give button usages to. For example, a "Wireless Receiver"
++//  (VID 0x248A, PID 0x8566) declares 5 button bits but only usages
++//  Button 1...3. macOS gives the unnamed bits the last named usage
++//  (Button 3, the middle button), so both side buttons reach the CGEvent
++//  layer as `otherMouseDown` with button number 2 and can't be told apart
++//  from a wheel click there.
++//
++//  This monitor reads raw input reports only from devices with such unnamed
++//  button bits and records presses of them, so the event tap can turn the
++//  matching "middle click" into a back/forward swipe instead.
++//  Mice with complete descriptors are never opened by it.
++//
++
++import Foundation
++import IOKit.hid
++import os
++import Synchronization
++
++private let logger = Logger(subsystem: "com.janhuelsmann.SaneSideButtons", category: "RawButtonMonitor")
++
++// MARK: - Descriptor parsing
++
++/// A run of 1-bit button inputs in an input report.
++struct HIDButtonField: Equatable, Sendable {
++    /// Report ID, or 0 when the device doesn't use report IDs.
++    let reportID: UInt8
++    /// Bit offset of the first button inside the report payload (after the report ID byte).
++    let bitOffset: Int
++    /// Number of button bits in the field.
++    let count: Int
++    /// Number of those bits that have their own button usage.
++    let namedCount: Int
++
++    /// Payload bit positions with no usage of their own, in order (first = back, second = forward).
++    var unnamedBitPositions: [Int] {
++        guard self.count > self.namedCount else { return [] }
++        return Array((self.bitOffset + self.namedCount)..<(self.bitOffset + self.count))
++    }
++}
++
++enum HIDDescriptorParser {
++    /// One short item of a report descriptor.
++    private struct Item {
++        let type: UInt8
++        let tag: UInt8
++        let value: UInt32
++    }
++
++    /// Global items that stay in effect until changed (or popped).
++    private struct Globals {
++        var usagePage: UInt32 = 0
++        var reportSize: Int = 0
++        var reportCount: Int = 0
++        var reportID: UInt8 = 0
++    }
++
++    /// Parser state while walking the descriptor.
++    private struct State {
++        var globals = Globals()
++        var stack: [Globals] = []
++        var usages = 0
++        var usageMin: UInt32?
++        var usageMax: UInt32?
++        var inputOffsets: [UInt8: Int] = [:]
++        var fields: [HIDButtonField] = []
++
++        mutating func apply(_ item: Item) {
++            switch item.type {
++            case 0: self.applyMain(item)
++            case 1: self.applyGlobal(item)
++            case 2: self.applyLocal(item)
++            default: break
++            }
++        }
++
++        private mutating func applyGlobal(_ item: Item) {
++            switch item.tag {
++            case 0x0: self.globals.usagePage = item.value
++            case 0x7: self.globals.reportSize = Int(item.value)
++            case 0x8: self.globals.reportID = UInt8(truncatingIfNeeded: item.value)
++            case 0x9: self.globals.reportCount = Int(item.value)
++            case 0xA: self.stack.append(self.globals)
++            case 0xB: if let top = self.stack.popLast() { self.globals = top }
++            default: break
++            }
++        }
++
++        private mutating func applyLocal(_ item: Item) {
++            switch item.tag {
++            case 0x0: self.usages += 1
++            case 0x1: self.usageMin = item.value
++            case 0x2: self.usageMax = item.value
++            default: break
++            }
++        }
++
++        /// Input items add fields; every main item (Input, Output, Feature, Collection,
++        /// End Collection) clears the local items.
++        private mutating func applyMain(_ item: Item) {
++            defer {
++                self.usages = 0
++                self.usageMin = nil
++                self.usageMax = nil
++            }
++            guard item.tag == 0x8 else { return }
++            let globals = self.globals
++            let offset = self.inputOffsets[globals.reportID, default: 0]
++            self.inputOffsets[globals.reportID] = offset + globals.reportSize * globals.reportCount
++
++            let isConstant = item.value & 0x01 != 0
++            let isVariable = item.value & 0x02 != 0
++            guard !isConstant, isVariable, globals.usagePage == 0x09, globals.reportSize == 1 else { return }
++            var named = self.usages
++            if let min = self.usageMin, let max = self.usageMax, max >= min {
++                named += Int(max - min + 1)
++            }
++            self.fields.append(HIDButtonField(reportID: globals.reportID,
++                                              bitOffset: offset,
++                                              count: globals.reportCount,
++                                              namedCount: Swift.min(named, globals.reportCount)))
++        }
++    }
++
++    /// Returns every Button-page (0x09) input field of 1-bit variables in a HID report descriptor.
++    static func buttonFields(in descriptor: [UInt8]) -> [HIDButtonField] {
++        var state = State()
++        var index = 0
++        while index < descriptor.count {
++            let prefix = descriptor[index]
++            if prefix == 0xFE { // long item: 0xFE, size, tag, data...
++                guard index + 1 < descriptor.count else { break }
++                index += 3 + Int(descriptor[index + 1])
++                continue
++            }
++            let sizeCode = Int(prefix & 0x03)
++            let size = sizeCode == 3 ? 4 : sizeCode
++            guard index + size < descriptor.count else { break }
++            var value: UInt32 = 0
++            for byte in 0..<size {
++                value |= UInt32(descriptor[index + 1 + byte]) << (8 * UInt32(byte))
++            }
++            index += 1 + size
++            state.apply(Item(type: (prefix >> 2) & 0x03, tag: prefix >> 4, value: value))
++        }
++        return state.fields
++    }
++}
++
++// MARK: - Raw report monitor
++
++final class RawButtonMonitor: Sendable {
++
++    enum Side: Sendable {
++        case back
++        case forward
++    }
++
++    /// Per-device data, only touched on the monitor thread.
++    fileprivate final class DeviceBox {
++        let fields: [HIDButtonField]
++        let buffer: UnsafeMutablePointer<UInt8>
++        let bufferSize: Int
++        var previouslyPressed: Set<Int> = []
++
++        init(fields: [HIDButtonField], bufferSize: Int) {
++            self.fields = fields
++            self.bufferSize = bufferSize
++            self.buffer = .allocate(capacity: bufferSize)
++        }
++
++        deinit { self.buffer.deallocate() }
++    }
++
++    private struct State {
++        var quirkyDevices: Int = 0
++        var pending: [(side: Side, time: UInt64)] = []
++    }
++
++    static let shared = RawButtonMonitor()
++
++    /// How long a raw side-button press stays valid for matching with a CGEvent.
++    private static let pendingLifetimeNs: UInt64 = 150_000_000
++
++    private let state: Mutex<State> = Mutex(State())
++    /// Attached devices: device pointer bits -> retained DeviceBox pointer bits.
++    private let attached: Mutex<[Int: Int]> = Mutex([:])
++    private let started: Mutex<Bool> = Mutex(false)
++
++    private init() { }
++
++    /// True while at least one connected mouse has unnamed button bits.
++    var hasQuirkyDevice: Bool {
++        self.state.withLock { $0.quirkyDevices > 0 }
++    }
++
++    /// Starts listening on a background thread. Safe to call more than once.
++    func start() {
++        let shouldStart = self.started.withLock { started in
++            defer { started = true }
++            return !started
++        }
++        guard shouldStart else { return }
++        let thread = Thread { RawButtonMonitor.shared.runMonitor() }
++        thread.name = "SaneSideButtons.RawButtonMonitor"
++        thread.start()
++    }
++
++    /// Waits up to `timeout` seconds for a raw side-button press and consumes it.
++    /// Called from the event tap when a middle-button press arrives.
++    func consumeSidePress(waitingUpTo timeout: TimeInterval) -> Side? {
++        let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeout * 1_000_000_000)
++        repeat {
++            let now = DispatchTime.now().uptimeNanoseconds
++            let side: Side? = self.state.withLock { state in
++                state.pending.removeAll { now &- $0.time > Self.pendingLifetimeNs }
++                return state.pending.isEmpty ? nil : state.pending.removeFirst().side
++            }
++            if let side { return side }
++            usleep(500)
++        } while DispatchTime.now().uptimeNanoseconds < deadline
++        return nil
++    }
++
++    // MARK: - Monitor thread
++
++    private func runMonitor() {
++        let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
++        let mouseMatch: [String: Int] = [kIOHIDPrimaryUsagePageKey: kHIDPage_GenericDesktop,
++                                         kIOHIDPrimaryUsageKey: kHIDUsage_GD_Mouse]
++        IOHIDManagerSetDeviceMatching(manager, mouseMatch as CFDictionary)
++        IOHIDManagerRegisterDeviceMatchingCallback(manager, deviceMatched, nil)
++        IOHIDManagerRegisterDeviceRemovalCallback(manager, deviceRemoved, nil)
++        IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
++        let result = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
++        guard result == kIOReturnSuccess else {
++            // Usually missing Input Monitoring permission. Normal mice keep working.
++            logger.error("Raw button monitor unavailable (IOHIDManagerOpen \(result, privacy: .public))")
++            return
++        }
++        CFRunLoopRun()
++    }
++
++    fileprivate func attach(_ device: IOHIDDevice) {
++        guard let descriptor = IOHIDDeviceGetProperty(device, kIOHIDReportDescriptorKey as CFString) as? Data else {
++            return
++        }
++        let fields = HIDDescriptorParser.buttonFields(in: [UInt8](descriptor))
++            .filter { !$0.unnamedBitPositions.isEmpty }
++        guard !fields.isEmpty else { return }
++
++        let maxReport = (IOHIDDeviceGetProperty(device, kIOHIDMaxInputReportSizeKey as CFString) as? Int) ?? 64
++        let box = DeviceBox(fields: fields, bufferSize: Swift.max(maxReport, 1))
++        let key = Int(bitPattern: Unmanaged.passUnretained(device).toOpaque())
++        let context = Unmanaged.passRetained(box).toOpaque()
++        IOHIDDeviceRegisterInputReportCallback(device, box.buffer, box.bufferSize, reportReceived, context)
++        self.attached.withLock { $0[key] = Int(bitPattern: context) }
++        self.state.withLock { $0.quirkyDevices += 1 }
++        let name = IOHIDDeviceGetProperty(device, kIOHIDProductKey as CFString) as? String ?? "unknown"
++        logger.notice("Reading unnamed side-button bits from \(name, privacy: .public)")
++    }
++
++    fileprivate func detach(_ device: IOHIDDevice) {
++        let key = Int(bitPattern: Unmanaged.passUnretained(device).toOpaque())
++        guard let boxBits = self.attached.withLock({ $0.removeValue(forKey: key) }),
++              let pointer = UnsafeMutableRawPointer(bitPattern: boxBits) else { return }
++        Unmanaged<DeviceBox>.fromOpaque(pointer).release()
++        self.state.withLock { $0.quirkyDevices = Swift.max(0, $0.quirkyDevices - 1) }
++    }
++
++    fileprivate func handleReport(box: DeviceBox, reportID: UInt32, report: UnsafeMutablePointer<UInt8>, length: Int) {
++        // With report IDs, byte 0 of the buffer is the ID itself.
++        let payloadStart = reportID == 0 ? 0 : 1
++        var pressedNow: Set<Int> = []
++        var newPresses: [Side] = []
++        for field in box.fields where UInt32(field.reportID) == reportID {
++            for (order, bit) in field.unnamedBitPositions.prefix(2).enumerated() {
++                let byteIndex = payloadStart + bit / 8
++                guard byteIndex < length else { continue }
++                let isDown = (report[byteIndex] >> UInt8(bit % 8)) & 1 == 1
++                let key = Int(field.reportID) << 16 | bit
++                if isDown {
++                    pressedNow.insert(key)
++                    if !box.previouslyPressed.contains(key) {
++                        newPresses.append(order == 0 ? .back : .forward)
++                    }
++                }
++            }
++        }
++        // Keep the pressed state of other report IDs untouched.
++        box.previouslyPressed = box.previouslyPressed.filter { $0 >> 16 != Int(reportID) }.union(pressedNow)
++        guard !newPresses.isEmpty else { return }
++        let now = DispatchTime.now().uptimeNanoseconds
++        self.state.withLock { state in
++            state.pending.append(contentsOf: newPresses.map { ($0, now) })
++        }
++    }
++}
++
++// MARK: - C callbacks
++
++private func deviceMatched(context: UnsafeMutableRawPointer?, result: IOReturn,
++                           sender: UnsafeMutableRawPointer?, device: IOHIDDevice) {
++    RawButtonMonitor.shared.attach(device)
++}
++
++private func deviceRemoved(context: UnsafeMutableRawPointer?, result: IOReturn,
++                           sender: UnsafeMutableRawPointer?, device: IOHIDDevice) {
++    RawButtonMonitor.shared.detach(device)
++}
++
++// swiftlint:disable:next function_parameter_count
++private func reportReceived(context: UnsafeMutableRawPointer?, result: IOReturn,
++                            sender: UnsafeMutableRawPointer?, type: IOHIDReportType,
++                            reportID: UInt32, report: UnsafeMutablePointer<UInt8>, reportLength: CFIndex) {
++    guard let context else { return }
++    RawButtonMonitor.shared.handleReportFromCallback(context: context, reportID: reportID,
++                                                     report: report, length: reportLength)
++}
++
++extension RawButtonMonitor {
++    fileprivate func handleReportFromCallback(context: UnsafeMutableRawPointer, reportID: UInt32,
++                                              report: UnsafeMutablePointer<UInt8>, length: Int) {
++        let box = Unmanaged<DeviceBox>.fromOpaque(context).takeUnretainedValue()
++        self.handleReport(box: box, reportID: reportID, report: report, length: length)
++    }
++}
+diff --git a/SaneSideButtons/SaneSideButtons.entitlements b/SaneSideButtons/SaneSideButtons.entitlements
+index d555b59..0db24ab 100644
+--- a/SaneSideButtons/SaneSideButtons.entitlements
++++ b/SaneSideButtons/SaneSideButtons.entitlements
+@@ -6,5 +6,9 @@
+ 	<true/>
+ 	<key>com.apple.security.automation.apple-events</key>
+ 	<true/>
++	<key>com.apple.security.device.bluetooth</key>
++	<true/>
++	<key>com.apple.security.device.usb</key>
++	<true/>
+ </dict>
+ </plist>
+diff --git a/SaneSideButtons/SwipeSimulator.swift b/SaneSideButtons/SwipeSimulator.swift
+index 3a23717..f1cfa1f 100644
+--- a/SaneSideButtons/SwipeSimulator.swift
++++ b/SaneSideButtons/SwipeSimulator.swift
+@@ -51,6 +51,9 @@ final class SwipeSimulator: Sendable {
+     /// Whether the swipe direction is reversed (e.g. right <-> left).
+     private let reverseButtons: Mutex<Bool> = Mutex(UserDefaults.standard.bool(forKey: Keys.reverse))
+ 
++    /// Middle-button releases still to swallow after a side button was turned into a swipe.
++    private let swallowedMiddleUps: Mutex<Int> = Mutex(0)
++
+     private init() { }
+ 
+     // MARK: - Public
+@@ -143,11 +146,17 @@ final class SwipeSimulator: Sendable {
+     }
+ 
+     fileprivate func handleMouseEvent(type: CGEventType, cgEvent: CGEvent) -> CGEvent? {
++        let number = CGEvent.getIntegerValueField(cgEvent)(.mouseEventButtonNumber)
++
++        // Mice whose side buttons arrive as a middle click (see RawButtonMonitor).
++        if number == 2, let handled = self.handleMiddleButtonFromQuirkyMouse(type: type) {
++            return handled ? nil : cgEvent
++        }
++
+         guard type == .otherMouseDown && self.isValidApplication() else {
+             return cgEvent
+         }
+ 
+-        let number = CGEvent.getIntegerValueField(cgEvent)(.mouseEventButtonNumber)
+         if number == 3 {
+             self.fakeSwipe(direction: TLInfoSwipeDirection(kTLInfoSwipeLeft))
+             return nil
+@@ -158,6 +167,32 @@ final class SwipeSimulator: Sendable {
+         return cgEvent
+     }
+ 
++    /// Returns nil when no quirky mouse is connected (normal handling),
++    /// true when the event was a side button and should be swallowed,
++    /// false when it was a real middle click and should pass through.
++    private func handleMiddleButtonFromQuirkyMouse(type: CGEventType) -> Bool? {
++        let monitor = RawButtonMonitor.shared
++        guard monitor.hasQuirkyDevice else { return nil }
++
++        if type == .otherMouseUp {
++            // Swallow the release that belongs to a swallowed press.
++            return self.swallowedMiddleUps.withLock { count in
++                guard count > 0 else { return false }
++                count -= 1
++                return true
++            }
++        }
++        guard type == .otherMouseDown else { return false }
++
++        // The raw report and the CGEvent come from the same USB report, but
++        // either can arrive first, so wait briefly for the raw side.
++        guard let side = monitor.consumeSidePress(waitingUpTo: 0.02) else { return false }
++        guard self.isValidApplication() else { return false }
++        self.swallowedMiddleUps.withLock { $0 += 1 }
++        self.fakeSwipe(direction: TLInfoSwipeDirection(side == .back ? kTLInfoSwipeLeft : kTLInfoSwipeRight))
++        return true
++    }
++
+     private func isValidApplication() -> Bool {
+         guard let frontAppBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return true }
+         return self.ignoredApplications.withLock { !$0.contains(frontAppBundleID) }
+-- 
+2.54.0 (Apple Git-157)
+
