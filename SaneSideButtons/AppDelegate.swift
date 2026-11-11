@@ -181,6 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.getEventPermission()
         do {
             try SwipeSimulator.shared.setupEventTap()
+            RawButtonMonitor.shared.start()
         } catch {
             if self.permissionWindow == nil {
                 self.promptPermissions()

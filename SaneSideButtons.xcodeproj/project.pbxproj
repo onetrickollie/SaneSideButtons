@@ -15,6 +15,7 @@
 		3D06880B28FC3D0900EFFFBA /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D06880A28FC3D0800EFFFBA /* main.swift */; };
 		3D20D345298EB4AE00D74D28 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 3D20D347298EB4AE00D74D28 /* Localizable.strings */; };
 		3D25277A28FCA303003BBABD /* PermissionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D25277928FCA303003BBABD /* PermissionView.swift */; };
+		5A5A5A5A2F00000000000001 /* RawButtonMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A5A5A5A2F00000000000002 /* RawButtonMonitor.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -33,6 +34,7 @@
 		3D20D346298EB4AE00D74D28 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
 		3D25277928FCA303003BBABD /* PermissionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionView.swift; sourceTree = "<group>"; };
 		3D95DB932D40FFCE00A8AC70 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
+		5A5A5A5A2F00000000000002 /* RawButtonMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RawButtonMonitor.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -70,6 +72,7 @@
 				3D0687F028FC3A6D00EFFFBA /* AppDelegate.swift */,
 				3D25277928FCA303003BBABD /* PermissionView.swift */,
 				3D06880628FC3B4C00EFFFBA /* SwipeSimulator.swift */,
+				5A5A5A5A2F00000000000002 /* RawButtonMonitor.swift */,
 				3D06880828FC3B8200EFFFBA /* Licenses.txt */,
 				3D0687F428FC3A6E00EFFFBA /* Assets.xcassets */,
 				3D0687F928FC3A6E00EFFFBA /* SaneSideButtons.entitlements */,
@@ -172,6 +175,7 @@
 				3D0687F128FC3A6D00EFFFBA /* AppDelegate.swift in Sources */,
 				3D06880428FC3B0D00EFFFBA /* TouchEvents.c in Sources */,
 				3D06880728FC3B4C00EFFFBA /* SwipeSimulator.swift in Sources */,
+				5A5A5A5A2F00000000000001 /* RawButtonMonitor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

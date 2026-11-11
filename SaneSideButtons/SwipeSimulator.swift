@@ -51,6 +51,9 @@ final class SwipeSimulator: Sendable {
     /// Whether the swipe direction is reversed (e.g. right <-> left).
     private let reverseButtons: Mutex<Bool> = Mutex(UserDefaults.standard.bool(forKey: Keys.reverse))
 
+    /// Middle-button releases still to swallow after a side button was turned into a swipe.
+    private let swallowedMiddleUps: Mutex<Int> = Mutex(0)
+
     private init() { }
 
     // MARK: - Public
@@ -143,11 +146,17 @@ final class SwipeSimulator: Sendable {
     }
 
     fileprivate func handleMouseEvent(type: CGEventType, cgEvent: CGEvent) -> CGEvent? {
+        let number = CGEvent.getIntegerValueField(cgEvent)(.mouseEventButtonNumber)
+
+        // Mice whose side buttons arrive as a middle click (see RawButtonMonitor).
+        if number == 2, let handled = self.handleMiddleButtonFromQuirkyMouse(type: type) {
+            return handled ? nil : cgEvent
+        }
+
         guard type == .otherMouseDown && self.isValidApplication() else {
             return cgEvent
         }
 
-        let number = CGEvent.getIntegerValueField(cgEvent)(.mouseEventButtonNumber)
         if number == 3 {
             self.fakeSwipe(direction: TLInfoSwipeDirection(kTLInfoSwipeLeft))
             return nil
@@ -156,6 +165,32 @@ final class SwipeSimulator: Sendable {
             return nil
         }
         return cgEvent
+    }
+
+    /// Returns nil when no quirky mouse is connected (normal handling),
+    /// true when the event was a side button and should be swallowed,
+    /// false when it was a real middle click and should pass through.
+    private func handleMiddleButtonFromQuirkyMouse(type: CGEventType) -> Bool? {
+        let monitor = RawButtonMonitor.shared
+        guard monitor.hasQuirkyDevice else { return nil }
+
+        if type == .otherMouseUp {
+            // Swallow the release that belongs to a swallowed press.
+            return self.swallowedMiddleUps.withLock { count in
+                guard count > 0 else { return false }
+                count -= 1
+                return true
+            }
+        }
+        guard type == .otherMouseDown else { return false }
+
+        // The raw report and the CGEvent come from the same USB report, but
+        // either can arrive first, so wait briefly for the raw side.
+        guard let side = monitor.consumeSidePress(waitingUpTo: 0.02) else { return false }
+        guard self.isValidApplication() else { return false }
+        self.swallowedMiddleUps.withLock { $0 += 1 }
+        self.fakeSwipe(direction: TLInfoSwipeDirection(side == .back ? kTLInfoSwipeLeft : kTLInfoSwipeRight))
+        return true
     }
 
     private func isValidApplication() -> Bool {
